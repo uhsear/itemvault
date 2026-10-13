@@ -347,14 +347,14 @@ def self_test():
     portal = "https://example.maps.arcgis.com"
     iid = "0123456789abcdef0123456789abcdef"
     night = {"version": "2.31", "operationalLayers": [
-        {"id": "layer-1", "title": "Hydrants",
-         "url": "https://example.com/arcgis/rest/services/Hydrants/"
+        {"id": "layer-1", "title": "Layer A",
+         "url": "https://example.com/arcgis/rest/services/LayerA/"
                 "FeatureServer/0"}],
         "baseMap": {"title": "Topographic"}}
     lunch = json.loads(json.dumps(night))
     lunch["operationalLayers"].append(
-        {"id": "layer-2", "title": "Valves",
-         "url": "https://example.com/arcgis/rest/services/Valves/"
+        {"id": "layer-2", "title": "Layer B",
+         "url": "https://example.com/arcgis/rest/services/LayerB/"
                 "FeatureServer/0"})
     broken = json.loads(json.dumps(lunch))
     broken["operationalLayers"][0]["url"] = "https://gone.example.com/x"
@@ -543,6 +543,9 @@ def self_test():
     check(decide(s_lunch, 1500, night)[0] == FUTURE,
           "a snapshot later than the live item is refused as not from its "
           "history  <-- pinned defect")
+    check(decide(s_night, 1000, lunch)[0] == UNSAVED,
+          "a live item with the snapshot's own edit time but other content is "
+          "not FUTURE  <-- pinned defect")
     check(decide(s_night, 4000, {})[0] == RESTORE,
           "an item whose configuration was wiped to {} is restored without "
           "a snapshot of the wipe  <-- pinned defect")
@@ -673,6 +676,8 @@ def self_test():
                     "token=%s" % form.get("token")}})
             if mode["write"] == "refuse":
                 return self.reply(200, {"success": False})
+            if mode["write"] == "truthy":
+                return self.reply(200, {"success": "false"})
             if mode["write"] == "garbage":
                 return self.reply(200, b"<html>gateway</html>")
             if mode["write"] == "apply":
@@ -728,8 +733,10 @@ def self_test():
               "  <-- pinned defect")
         code, out, err = run_cli(snap_args + ["--apply"])
         night_file = os.path.join(vault, files()[0]) if files() else ""
-        check(code == 0 and len(files()) == 1 and "wrote" in out,
-              "a snapshot with --apply writes one file")
+        check(code == 0 and len(files()) == 1 and night_file in out
+              and "Check only" not in out,
+              "a snapshot with --apply writes one file, names its path and "
+              "says nothing of a check")
         with io.open(night_file, encoding="ascii") as fh:
             on_disk = json.load(fh)
         check(check_snapshot(on_disk) is None and on_disk["data"] == night,
@@ -771,7 +778,8 @@ def self_test():
         check("operationalLayers" in out,
               "the plan names the top-level keys that will change")
         code, out, err = run_cli(restore_args + ["--apply"])
-        check(code == 0 and VERIFIED in out and live_data() == night,
+        check(code == 0 and VERIFIED in out and live_data() == night
+              and "skipped" not in out,
               "with --apply it writes, reads back and reports VERIFIED")
         post = posts()[0] if posts() else ("", "", "", {})
         check(len(posts()) == 1 and "token" not in post[2]
@@ -810,6 +818,11 @@ def self_test():
         code, out, err = run_cli(restore_args + ["--apply"])
         check(code == 2 and "not confirmed" in err,
               "an update answering success false is a failure, exit 2")
+        mode["write"] = "truthy"
+        code, out, err = run_cli(restore_args + ["--apply"])
+        check(code == 2 and "not confirmed" in err,
+              "an update answering success as the text false is a failure, "
+              "not a confirmation  <-- pinned defect")
         mode["write"] = "garbage"
         code, out, err = run_cli(restore_args + ["--apply"])
         check(code == 2 and "not confirmed" in err,
@@ -849,7 +862,7 @@ def self_test():
         # A damaged copy of the live configuration in the vault holds nothing.
         broken2 = dict(broken, version="3.0")
         put(iid, broken2, 12000)
-        held_copy = snap(broken2, 12000, where=live)
+        held_copy = snap(json.loads(json.dumps(broken2)), 12000, where=live)
         held_copy["data"]["version"] = "9.99"
         with io.open(os.path.join(vault, snapshot_name(held_copy)), "w",
                      encoding="ascii") as fh:
@@ -868,8 +881,10 @@ def self_test():
         check(code == 1 and UNSAVED in out and posts() == [],
               "a damaged vault file that claims the live configuration does "
               "not hold it  <-- pinned defect")
-        check("elsewhere.json" not in out,
-              "nor does a whole snapshot of it taken on another portal")
+        check("elsewhere.json" not in [os.path.basename(p) for p, _d
+                                       in load_vault(vault, live)[0]],
+              "nor does a whole snapshot of it taken on another portal"
+              "  <-- pinned defect")
         check("2 file(s) in the vault were skipped" in out,
               "and the skipped vault files are counted")
 
